@@ -297,7 +297,7 @@ void write_mille(Mille *mille, int n, UnitCell *cell,
 }
 
 
-Mille *crystfel_mille_new(const char *outFileName)
+static Mille *mille_new()
 {
 	Mille *m;
 
@@ -311,6 +311,15 @@ Mille *crystfel_mille_new(const char *outFileName)
 	m->have_local = NULL;
 	m->n_local = 0;
 
+	return m;
+}
+
+
+Mille *crystfel_mille_new(const char *outFileName)
+{
+	Mille *m = mille_new();
+	if ( m == NULL ) return NULL;
+
 	m->fh = fopen(outFileName, "wb");
 	if ( m->fh == NULL ) {
 		ERROR("Failed to open Mille file '%s'\n", outFileName);
@@ -318,6 +327,21 @@ Mille *crystfel_mille_new(const char *outFileName)
 		return NULL;
 	}
 
+	return m;
+}
+
+
+Mille *crystfel_mille_new_fd(int fd)
+{
+	Mille *m = mille_new();
+	if ( m == NULL ) return NULL;
+
+	m->fh = fdopen(fd, "wb");
+	if ( m->fh == NULL ) {
+		ERROR("Failed to open Mille FD %i\n", fd);
+		cffree(m);
+		return NULL;
+	}
 
 	return m;
 }
@@ -363,9 +387,13 @@ void crystfel_mille_write_record(Mille *m)
 	fwrite(&nw, sizeof(int), 1, m->fh);
 
 	fwrite(&nf, sizeof(float), 1, m->fh);
-	fwrite(m->float_arr, sizeof(float), m->n, m->fh);
+	for ( i=0; i<m->n; i++ ) {
+		fwrite(&m->float_arr[i], sizeof(float), 1, m->fh);
+	}
 
 	fwrite(&ni, sizeof(int), 1, m->fh);
-	fwrite(m->int_arr, sizeof(int), m->n, m->fh);
+	for ( i=0; i<m->n; i++ ) {
+		fwrite(&m->int_arr[i], sizeof(int), 1, m->fh);
+	}
 	m->n = 0;
 }
