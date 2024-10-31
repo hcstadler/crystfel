@@ -219,7 +219,7 @@ const char *ffbidx_probe(UnitCell *cell) {
     return "ffbidx";
 }
 
-#else
+#else // HAVE_FFBIDX is not set
 
 int run_ffbidx(struct image *image, void *ipriv)
 {
