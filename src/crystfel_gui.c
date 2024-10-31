@@ -3,11 +3,11 @@
  *
  * CrystFEL's main graphical user interface
  *
- * Copyright © 2020-2023 Deutsches Elektronen-Synchrotron DESY,
+ * Copyright © 2020-2024 Deutsches Elektronen-Synchrotron DESY,
  *                       a research centre of the Helmholtz Association.
  *
  * Authors:
- *   2020-2023 Thomas White <taw@physics.org>
+ *   2020-2024 Thomas White <taw@physics.org>
  *
  * This file is part of CrystFEL.
  *
@@ -449,7 +449,7 @@ static gint goto_frame_sig(GtkWidget *widget, struct crystfelproject *proj)
 	gtk_box_pack_start(GTK_BOX(hbox), GTK_WIDGET(stuff->framenumchk),
 	                   FALSE, FALSE, 4.0);
 	stuff->framenum = gtk_entry_new();
-	snprintf(tmp, 64, "%i", proj->cur_frame);
+	snprintf(tmp, 64, "%i", proj->cur_frame+1);
 	gtk_entry_set_text(GTK_ENTRY(stuff->framenum), tmp);
 	gtk_box_pack_start(GTK_BOX(hbox), GTK_WIDGET(stuff->framenum),
 	                   FALSE, FALSE, 4.0);
@@ -685,11 +685,14 @@ static gint about_sig(GtkWidget *widget, struct crystfelproject *proj)
 		"Richard Kirian <rkirian@asu.edu>",
 		"Valerio Mariani <<alerio.mariani@desy.de>",
 		"Andrew Martin <andrew.martin@desy.de>",
+	        "Philipp Middendorf <philipp.middendorf@desy.de>",
 		"Omri Mor <omor1@asu.edu>",
 		"Takanori Nakane <nakane.t@gmail.com>",
 		"Karol Nass <karol.nass@desy.de>",
 		"Nicolas Riebesel <nicolas.riebesel@tuhh.de>",
+	        "Silvan Schön <silvan.schoen@cfel.de>",
 		"Mamoru Suzuki <mamoru.suzuki@protein.osaka-u.ac.jp>",
+	        "Parthasarathy Tirumalai <parthasarathy.tirumalai@desy.de>",
 		"Alexandra Tolstikova <alexandra.tolstikova@desy.de>",
 		"Parker de Waal <Parker.deWaal@vai.org>",
 		"Keitaro Yamashita <k.yamashita@spring8.or.jp>",
@@ -724,7 +727,7 @@ static gint about_sig(GtkWidget *widget, struct crystfelproject *proj)
 	gtk_about_dialog_set_version(GTK_ABOUT_DIALOG(window),
 	                             crystfel_version_string());
 	gtk_about_dialog_set_copyright(GTK_ABOUT_DIALOG(window),
-		"© 2020-2023 Deutsches Elektronen-Synchrotron DESY, "
+		"© 2020-2024 Deutsches Elektronen-Synchrotron DESY, "
 		"a research centre of the Helmholtz Association.");
 	gtk_about_dialog_set_website(GTK_ABOUT_DIALOG(window),
 		"https://www.desy.de/~twhite/crystfel");

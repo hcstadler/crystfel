@@ -86,7 +86,7 @@ typedef struct
 struct sandbox
 {
 	int n_processed_last_stats;
-	double t_last_stats;
+	time_t t_last_stats;
 
 	/* Processing timeout in seconds.  After this long without responding
 	 * to a ping, the worker will be killed.  After 3 times this long
@@ -105,6 +105,7 @@ struct sandbox
 	int *running;
 	time_t *last_response;
 	int last_ping[MAX_NUM_WORKERS];
+	int warned_long_running[MAX_NUM_WORKERS];
 	int profile;  /* Whether to do wall-clock time profiling */
 	int cpu_pin;
 
@@ -147,11 +148,11 @@ struct get_pattern_ctx
 
 #ifdef HAVE_CLOCK_GETTIME
 
-double get_monotonic_seconds()
+time_t get_monotonic_seconds()
 {
 	struct timespec tp;
 	clock_gettime(CLOCK_MONOTONIC, &tp);
-	return tp.tv_sec + tp.tv_nsec * 1e-9;
+	return tp.tv_sec;
 }
 
 #else
@@ -159,11 +160,11 @@ double get_monotonic_seconds()
 /* Fallback version of the above.  The time according to gettimeofday() is not
  * monotonic, so measuring intervals based on it will screw up if there's a
  * timezone change (e.g. daylight savings) while the program is running. */
-double get_monotonic_seconds()
+time_t get_monotonic_seconds()
 {
 	struct timeval tp;
 	gettimeofday(&tp, NULL);
-	return tp.tv_sec + tp.tv_usec * 1e-6;
+	return tp.tv_sec;
 }
 
 #endif
@@ -180,6 +181,8 @@ static void check_hung_workers(struct sandbox *sb)
 {
 	int i;
 	time_t tnow = get_monotonic_seconds();
+
+	pthread_mutex_lock(&sb->shared->debug_lock);
 	for ( i=0; i<sb->n_proc; i++ ) {
 
 		if ( !sb->running[i] ) continue;
@@ -196,7 +199,7 @@ static void check_hung_workers(struct sandbox *sb)
 		}
 
 		if ( tnow - sb->shared->time_last_start[i] > sb->timeout*3 ) {
-			if ( !sb->shared->warned_long_running[i] ) {
+			if ( !sb->warned_long_running[i] ) {
 				STATUS("Worker %i has been working on one "
 				       "frame for more than %i seconds (just "
 				       "for info).\n", i, sb->timeout);
@@ -204,11 +207,12 @@ static void check_hung_workers(struct sandbox *sb)
 				       sb->shared->last_ev[i]);
 				STATUS("Task ID is: %s\n",
 				       sb->shared->last_task[i]);
-				sb->shared->warned_long_running[i] = 1;
+				sb->warned_long_running[i] = 1;
 			}
 		}
 
 	}
+	pthread_mutex_unlock(&sb->shared->debug_lock);
 }
 
 
@@ -336,14 +340,7 @@ static int get_pattern(struct get_pattern_ctx *gpctx,
 }
 
 
-void set_last_task(char *lt, const char *task)
-{
-	if ( lt == NULL ) return;
-	assert(strlen(task) < MAX_TASK_LEN-1);
-	strcpy(lt, task);
-}
-
-
+/* Like strstr(), but with a length parameter instead of nul-termination */
 static const char *str_in_str(const char *haystack, size_t len, const char *needle)
 {
 	size_t u;
@@ -456,9 +453,9 @@ static void add_pipe(PipeList *pd, int fd)
 
 	slot = pd->n_read;
 	pd->fds[slot] = fd;
-	pd->buffers[slot] = malloc(64*1024);
+	pd->buffer_len[slot] = 64*1024;  /* Initial buffer size */
+	pd->buffers[slot] = malloc(pd->buffer_len[slot]);
 	if ( pd->buffers[slot] == NULL ) return;
-	pd->buffer_len[slot] = 64*1024;
 	pd->buffer_pos[slot] = 0;
 
 	pd->n_read++;
@@ -539,14 +536,15 @@ static void check_pipes(PipeList *pd, size_t(*pump)(void *, size_t len, struct s
 		}
 
 		if ( pd->buffer_len[i] == pd->buffer_pos[i] ) {
+			const size_t buffer_increment = 64*1024;
 			void *buf_new = realloc(pd->buffers[i],
-			                        pd->buffer_len[i]+64*1024);
+			                        pd->buffer_len[i]+buffer_increment);
 			if ( buf_new == NULL ) {
 				ERROR("Failed to grow buffer\n");
 				continue;
 			}
 			pd->buffers[i] = buf_new;
-			pd->buffer_len[i] += 64*1024;
+			pd->buffer_len[i] += buffer_increment;
 		}
 
 		/* If the chunk cannot be read, assume the connection
@@ -614,12 +612,82 @@ static void start_worker_process(struct sandbox *sb, int slot)
 	}
 
 	pthread_mutex_lock(&sb->shared->queue_lock);
-	sb->shared->pings[slot] = 0;
 	sb->shared->end_of_stream[slot] = 0;
+	pthread_mutex_unlock(&sb->shared->queue_lock);
+
+	pthread_mutex_lock(&sb->shared->debug_lock);
+	sb->shared->pings[slot] = 0;
 	sb->last_ping[slot] = 0;
 	sb->shared->time_last_start[slot] = get_monotonic_seconds();
-	sb->shared->warned_long_running[slot] = 0;
-	pthread_mutex_unlock(&sb->shared->queue_lock);
+	pthread_mutex_unlock(&sb->shared->debug_lock);
+
+	sb->warned_long_running[slot] = 0;
+
+	/* Set up nargv including "new" args */
+	nargc = 0;
+	nargv = malloc((sb->argc+16)*sizeof(char *));
+	if ( nargv == NULL ) return;
+	for ( i=0; i<sb->argc; i++ ) {
+		nargv[nargc++] = sb->argv[i];
+	}
+
+	nargv[nargc++] = "--shm-name";
+	nargv[nargc++] = sb->shm_name;
+
+	nargv[nargc++] = "--queue-sem";
+	nargv[nargc++] = sb->sem_name;
+
+	nargv[nargc++] = "--worker-tmpdir";
+	tmpdir_copy = strdup(sb->tmpdir);
+	if ( tmpdir_copy == NULL ) return;
+	nargv[nargc++] = tmpdir_copy;
+
+	nargv[nargc++] = "--worker-id";
+	worker_id = malloc(64);
+	if ( worker_id == NULL ) return;
+	snprintf(worker_id, 64, "%i", slot);
+	nargv[nargc++] = worker_id;
+
+	nargv[nargc++] = "--fd-stream";
+	fd_stream = malloc(64);
+	snprintf(fd_stream, 64, "%i", stream_pipe[1]);
+	nargv[nargc++] = fd_stream;
+
+	nargv[nargc++] = "--fd-mille";
+	fd_mille = malloc(64);
+	snprintf(fd_mille, 64, "%i", mille_pipe[1]);
+	nargv[nargc++] = fd_mille;
+
+	if ( sb->probed_methods != NULL ) {
+		methods_copy = strdup(sb->probed_methods);
+		nargv[nargc++] = "--indexing";
+		nargv[nargc++] = methods_copy;
+	}
+	nargv[nargc++] = NULL;
+
+	len = readlink("/proc/self/exe", buf, 1024);
+
+	if ( (len == -1) || (len >= 1023)  ) {
+		ERROR("readlink() failed: %s\n", strerror(errno));
+	} else {
+		buf[len] = '\0';
+		if ( strstr(buf, "indexamajig") == NULL ) {
+			ERROR("Didn't recognise /proc/self/exe (%s)\n", buf);
+		} else {
+			indexamajig = buf;
+		}
+	}
+	if ( indexamajig == NULL ) {
+		if ( strstr(sb->argv[0], "indexamajig") == NULL ) {
+			ERROR("Didn't recognise argv[0] (%s)\n", sb->argv[0]);
+		} else {
+			indexamajig = sb->argv[0];
+		}
+	}
+	if ( indexamajig == NULL ) {
+		ERROR("Falling back on shell search path.\n");
+		indexamajig = "indexamajig";
+	}
 
 	/* Set up nargv including "new" args */
 	nargc = 0;
@@ -710,7 +778,9 @@ static void start_worker_process(struct sandbox *sb, int slot)
 	 * and the 'read' end of the result pipe. */
 	sb->pids[slot] = p;
 	sb->running[slot] = 1;
+	pthread_mutex_lock(&sb->shared->debug_lock);
 	stamp_response(sb, slot);
+	pthread_mutex_unlock(&sb->shared->debug_lock);
 	add_pipe(sb->st_from_workers, stream_pipe[0]);
 	add_pipe(sb->mille_from_workers, mille_pipe[0]);
 	close(stream_pipe[1]);
@@ -837,11 +907,21 @@ static int setup_shm(struct sandbox *sb)
 		return 1;
 	}
 
+	if ( pthread_mutex_init(&sb->shared->debug_lock, &attr) ) {
+		ERROR("Queue lock setup failed.\n");
+		pthread_mutexattr_destroy(&attr);
+		pthread_mutex_destroy(&sb->shared->term_lock);
+		pthread_mutex_destroy(&sb->shared->queue_lock);
+		free(sb->shm_name);
+		return 1;
+	}
+
 	if ( pthread_mutex_init(&sb->shared->totals_lock, &attr) ) {
 		ERROR("Totals lock setup failed.\n");
 		pthread_mutexattr_destroy(&attr);
 		pthread_mutex_destroy(&sb->shared->term_lock);
 		pthread_mutex_destroy(&sb->shared->queue_lock);
+		pthread_mutex_destroy(&sb->shared->debug_lock);
 		free(sb->shm_name);
 		return 1;
 	}
@@ -937,8 +1017,8 @@ static void try_status(struct sandbox *sb, int final)
 {
 	int r;
 	int n_proc_this;
-	double tNow;
-	double time_this;
+	time_t tNow;
+	time_t time_this;
 	const char *finalstr;
 	char persec[64];
 
@@ -1108,7 +1188,7 @@ int create_sandbox(struct index_args *iargs, int n_proc, char *prefix,
 	int r;
 	int allDone = 0;
 	struct get_pattern_ctx gpctx;
-	double t_last_data;
+	time_t t_last_data;
 
 	if ( n_proc > MAX_NUM_WORKERS ) {
 		ERROR("Number of workers (%i) is too large.  Using %i\n",
@@ -1285,6 +1365,7 @@ int create_sandbox(struct index_args *iargs, int n_proc, char *prefix,
 
 		/* Begin exit criterion checking */
 		pthread_mutex_lock(&sb->shared->queue_lock);
+		pthread_mutex_lock(&sb->shared->totals_lock);
 
 		/* Case 1: Queue empty and no more coming? */
 		if ( sb->shared->no_more && (sb->shared->n_events == 0) ) allDone = 1;
@@ -1305,6 +1386,7 @@ int create_sandbox(struct index_args *iargs, int n_proc, char *prefix,
 			t_last_data = get_monotonic_seconds();
 		}
 
+		pthread_mutex_unlock(&sb->shared->totals_lock);
 		pthread_mutex_unlock(&sb->shared->queue_lock);
 		/* End exit criterion checking */
 

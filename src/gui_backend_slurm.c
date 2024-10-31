@@ -49,6 +49,7 @@ struct slurm_common_opts
 	char *account;
 	char *constraint;
 	int time_limit;
+	int exclusive;
 };
 
 
@@ -102,16 +103,6 @@ static const char *get_str_val(const char *line, const char *key)
 }
 
 
-static int job_alive(const char *s)
-{
-	if ( strcmp(s, "PENDING") == 0 ) return 1;
-	if ( strcmp(s, "RUNNING") == 0 ) return 1;
-	if ( strcmp(s, "SUSPENDED") == 0 ) return 1;
-	if ( strcmp(s, "COMPLETING") == 0 ) return 1;
-	return 0;
-}
-
-
 static char *g_bytes_to_terminated_array(GBytes *bytes)
 {
 	gpointer arr;
@@ -132,8 +123,7 @@ static char *g_bytes_to_terminated_array(GBytes *bytes)
 }
 
 
-static int get_job_status(int job_id, int *running,
-                          int *n_running, int *n_complete)
+static int get_job_status(int job_id, int *n_alive, int *n_running)
 {
 	const gchar *args[6];
 	GError *error = NULL;
@@ -141,7 +131,6 @@ static int get_job_status(int job_id, int *running,
 	char job_id_str[64];
 	char *line;
 	char *nl;
-	int array_task;
 	GBytes *stdout_buf;
 	GBytes *stderr_buf;
 	char *buf;
@@ -180,52 +169,44 @@ static int get_job_status(int job_id, int *running,
 	}
 	free(buf_stderr);
 
-	if ( strstr(buf, "ArrayTaskId") != NULL ) {
-		array_task = 1;
-		*running = 0;
-	} else {
-		array_task = 0;
-	}
-
+	*n_alive = 0;
 	*n_running = 0;
-	*n_complete = 0;
 
 	/* Parse output */
 	line = &buf[0];
 	nl = strchr(line, '\n');
 	while ( nl != NULL ) {
 
+		int p1, p2;
+
 		nl[0] = '\0';
 
-		if ( array_task ) {
+		const char *state = get_str_val(line, "JobState");
+		const char *array_task_str = get_str_val(line, "ArrayTaskId");
 
-			const char *state = get_str_val(line, "JobState");
-			const char *array_task_str = get_str_val(line, "ArrayTaskId");
-
-			/* Ignore array job 'leader' */
-			if ( strchr(array_task_str, '-') == NULL ) {
-
-				if ( job_alive(state) ) {
-					(*n_running)++;
-					*running = 1;
-				}
-
-				if ( strcmp(state, "COMPLETED") == 0 ) {
-					(*n_complete)++;
-				}
-
-			} else {
-				if ( job_alive(state) ) {
-					*running = 1;
-				}
-			}
-
-		} else {
-
-			const char *state = get_str_val(line, "JobState");
-			*running = job_alive(state);
-
+		if ((strcmp(state, "PENDING") == 0)
+		 || (strcmp(state, "SUSPENDED") == 0))
+		{
+			(*n_alive)++;
 		}
+
+		if ((strcmp(state, "RUNNING") == 0)
+		 || (strcmp(state, "COMPLETING") == 0))
+		{
+			(*n_running)++;
+		}
+
+		if ( (array_task_str != NULL)
+		  && (sscanf(array_task_str, "%i-%i", &p1, &p2) == 2) )
+		{
+			/* This is a "job array leader" */
+			if ((strcmp(state, "PENDING") == 0)
+			 || (strcmp(state, "SUSPENDED") == 0)) {
+				(*n_alive) += p2-p1;
+			}
+		}
+
+		/* We are not interested in: FAILED, COMPLETED, CANCELLED */
 
 		line = nl+1;
 		nl = strchr(line, '\n');
@@ -237,15 +218,13 @@ static int get_job_status(int job_id, int *running,
 }
 
 
-static double indexing_progress(struct slurm_job *job, int *running,
-                                int n_running, int n_complete)
+static double indexing_progress(struct slurm_job *job, int n_alive, int n_running)
 {
 	/* If there are lots of blocks, just count running jobs instead of
 	 * reading loads of log files */
 	if ( job->n_blocks > 15 ) {
 
-		return  0.1*(double)(n_running+n_complete) / job->n_blocks
-		      + 0.9*(double)n_complete / job->n_blocks;
+		return (job->n_blocks - n_alive - 0.5*n_running) / job->n_blocks;
 
 	} else {
 
@@ -275,9 +254,9 @@ static int get_task_status(void *job_priv,
                            float *frac_complete)
 {
 	struct slurm_job *job = job_priv;
-	int n_running, n_complete;
+	int n_running, n_alive;
 
-	if ( get_job_status(job->job_id, running, &n_running, &n_complete) ) {
+	if ( get_job_status(job->job_id, &n_alive, &n_running) ) {
 		ERROR("Failed to get task status: %i\n", job->job_id);
 		return 1;
 	}
@@ -285,8 +264,8 @@ static int get_task_status(void *job_priv,
 	switch ( job->type ) {
 
 		case GUI_JOB_INDEXING :
-		*frac_complete = indexing_progress(job, running,
-		                                   n_running, n_complete);
+		*frac_complete = indexing_progress(job, n_alive, n_running);
+		*running = (n_alive+n_running > 0);
 		break;
 
 		case GUI_JOB_AMBIGATOR :
@@ -439,12 +418,21 @@ static gboolean timelimit_focus_sig(GtkEntry *entry, GdkEvent *event,
 	return FALSE;
 }
 
+
+static void exclusive_toggle_sig(GtkToggleButton *toggle, gpointer data)
+{
+	struct slurm_common_opts *opts = data;
+	opts->exclusive = gtk_toggle_button_get_active(toggle);
+}
+
+
 static void add_common_opts(GtkWidget *vbox,
                             struct slurm_common_opts *opts)
 {
 	GtkWidget *hbox;
 	GtkWidget *entry;
 	GtkWidget *label;
+	GtkWidget *toggle;
 	char tmp[64];
 
 	/* Partition */
@@ -563,6 +551,16 @@ static void add_common_opts(GtkWidget *vbox,
 	                 G_CALLBACK(qos_activate_sig), opts);
 	g_signal_connect(G_OBJECT(entry), "focus-out-event",
 	                 G_CALLBACK(qos_focus_sig), opts);
+
+	/* Exclusive */
+	hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+	gtk_box_pack_start(GTK_BOX(vbox), GTK_WIDGET(hbox), FALSE, FALSE, 0);
+	toggle = gtk_check_button_new_with_label("Request exclusive use of compute node(s)");
+	set_active(toggle, opts->exclusive);
+	gtk_widget_set_tooltip_text(toggle, "--exclusive");
+	gtk_box_pack_start(GTK_BOX(hbox), GTK_WIDGET(toggle), FALSE, FALSE, 0);
+	g_signal_connect(G_OBJECT(toggle), "toggled",
+	                 G_CALLBACK(exclusive_toggle_sig), opts);
 }
 
 
@@ -602,6 +600,9 @@ static void write_common_opts(FILE *fh,
 
 	fprintf(fh, "%s.slurm.time_limit %i\n",
 	        prefix, opts->time_limit);
+
+	fprintf(fh, "%s.slurm.exclusive %i\n",
+	        prefix, opts->exclusive);
 }
 
 
@@ -630,8 +631,10 @@ static char *add_bits(char *old, const char *new1, const char *new2)
 	strcpy(nn, old);
 	strcat(nn, "\n#SBATCH ");
 	strcat(nn, new1);
-	strcat(nn, " ");
-	strcat(nn, new2);
+	if ( strlen(new2) > 0 ) {
+		strcat(nn, " ");
+		strcat(nn, new2);
+	}
 	free(old);
 	return nn;
 }
@@ -671,6 +674,9 @@ static char *sbatch_bits(struct slurm_common_opts *opts,
 	}
 	if ( !empty(opts->qos) ) {
 		str = add_bits(str, "--qos", opts->qos);
+	}
+	if ( opts->exclusive ) {
+		str = add_bits(str, "--exclusive", "");
 	}
 	str = add_bits(str, "--nodes", "1");
 	str = add_bits(str, "--mail-type", "FAIL\n\n");
@@ -972,6 +978,7 @@ static void set_default_common_opts(struct slurm_common_opts *opts)
 	opts->constraint = NULL;
 	opts->time_limit = 60;
 	opts->qos = NULL;
+	opts->exclusive = 1;
 	opts->reservation = NULL;
 }
 
@@ -1045,6 +1052,10 @@ static void read_indexing_opt(void *opts_priv,
 
 	if ( strcmp(key, "indexing.slurm.time_limit") == 0 ) {
 		opts->common.time_limit = atoi(val);
+	}
+
+	if ( strcmp(key, "indexing.slurm.exclusive") == 0 ) {
+		opts->common.exclusive = atoi(val);
 	}
 }
 
@@ -1240,6 +1251,10 @@ static void read_merging_opt(void *opts_priv,
 	if ( strcmp(key, "merging.slurm.time_limit") == 0 ) {
 		opts->common.time_limit = atoi(val);
 	}
+
+	if ( strcmp(key, "merging.slurm.exclusive") == 0 ) {
+		opts->common.exclusive = atoi(val);
+	}
 }
 
 
@@ -1301,6 +1316,10 @@ static void read_ambi_opt(void *opts_priv,
 
 	if ( strcmp(key, "ambi.slurm.time_limit") == 0 ) {
 		opts->common.time_limit = atoi(val);
+	}
+
+	if ( strcmp(key, "ambi.slurm.exclusive") == 0 ) {
+		opts->common.exclusive = atoi(val);
 	}
 }
 
