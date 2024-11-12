@@ -42,13 +42,52 @@
 
 #include <ffbidx/c_api.h>
 
+#define ERR_MSG_LEN 128u
+
+/* ffbidx_private_data state */
+#define STATE_UNDEF 0
+#define STATE_CREATED 1
+#define STATE_USED 2
+
 struct ffbidx_private_data {
     UnitCell *cellTemplate;     // cell template from crystfel, set in ffbidx_prepare()
     struct ffbidx_options opts; // indexer persistent/runtime/refinement configuration
     struct input in;            // indexer input
     struct output out;          // indexer output
     int handle;                 // indexer state handle
+    char msg[ERR_MSG_LEN];      // space for error message
+    struct error err_msg;       // error message space description
+    int state;
 };
+
+static void ffbidx_error(int handle, const char* activity)
+{
+    const size_t msg_len = 128;
+    char msg[msg_len];
+    if (handle>=0) {
+        struct error *err = error_message(handle);
+        if ((err != NULL) && (err->message != NULL)) {
+            snprintf(msg, msg_len, "Ffbidx error - %s: %s\n", activity, err->message);
+            ERROR(msg);
+        } else {
+            ERROR("Ffbidx handle without error message!\n");
+        }
+    } else {
+        ERROR("Invalid ffbidx indexer handle!\n");
+    }
+}
+
+static void check_ffbidx_state(const struct ffbidx_private_data *priv, int state_expected)
+{
+    if (priv == NULL) {
+        fprintf(stderr, "FATAL: ffbidx private data is NULL!\n");
+        exit(-1);
+    }
+    if (priv->state != state_expected) {
+        fprintf(stderr, "FATAL: ffbidx state is %d, but should be %d!\n", priv->state, state_expected);
+        exit(-1);
+    }
+}
 
 static void makeRightHanded(UnitCell *cell)
 {
@@ -63,8 +102,11 @@ static void makeRightHanded(UnitCell *cell)
 
 int run_ffbidx(struct image *image, void *ipriv) {
     unsigned npk, i;
+    int bcell;
 
     struct ffbidx_private_data *priv = (struct ffbidx_private_data *) ipriv;
+    check_ffbidx_state(priv, STATE_CREATED);
+    priv->state = STATE_USED;
 
     // how many spots to consider
     npk = (unsigned)image_feature_count(image->features);
@@ -95,26 +137,29 @@ int run_ffbidx(struct image *image, void *ipriv) {
 
     // start indexing
     if (index_start(priv->handle, &priv->in, &priv->out, &priv->opts.cruntime, NULL, NULL)) {
-        ERROR("Error running index_start\n");
+        ffbidx_error(priv->handle, "index_start");
+        priv->state = STATE_CREATED;
         return 0;
     }
 
     // wait for indexing output
     if (index_end(priv->handle, &priv->out)) {
-        ERROR("Error running index_end\n");
+        ffbidx_error(priv->handle, "index_end");
+        priv->state = STATE_CREATED;
         return 0;
     }
 
     // refine output cells
     if (refine(priv->handle, &priv->in, &priv->out, &priv->opts.cifssr, 0, 1)) {
-        ERROR("Error running refine\n");
+        ffbidx_error(priv->handle, "refine");
+        priv->state = STATE_CREATED;
         return 0;
     }
 
     // cell with best score
-    int bcell;
     if ((bcell = best_cell(priv->handle, &priv->out)) < 0) {
-        ERROR("Error running best_cell\n");
+        ffbidx_error(priv->handle, "best_cell");
+        priv->state = STATE_CREATED;
         return 0;
     }
 
@@ -132,6 +177,8 @@ int run_ffbidx(struct image *image, void *ipriv) {
     cell_set_lattice_type(uc, cell_get_lattice_type(priv->cellTemplate));
     cell_set_centering(uc, cell_get_centering(priv->cellTemplate));
     cell_set_unique_axis(uc, cell_get_unique_axis(priv->cellTemplate));
+
+    priv->state = STATE_CREATED;
 
     // validate and produce result in format expected by crystfel
     if ( validate_cell(uc) ) {
@@ -157,18 +204,22 @@ void *ffbidx_prepare(IndexingMethod *indm, UnitCell *cell, struct ffbidx_options
         return NULL;
     }
 
-    struct ffbidx_private_data *priv = (struct ffbidx_private_data *) malloc(sizeof(struct ffbidx_private_data));
+    struct ffbidx_private_data *priv = (struct ffbidx_private_data *) calloc(1, sizeof(struct ffbidx_private_data));
 
+    priv->state = STATE_UNDEF;
     priv->cellTemplate = cell;
     priv->opts = *opts;
+    priv->err_msg.message = priv->msg;
+    priv->err_msg.msg_len = ERR_MSG_LEN;
 
-    const struct config_persistent *cp = &priv->opts.cpers; // for convenientce
+    struct config_persistent *cp = &priv->opts.cpers; // for convenientce
 
     // allocate cell input space for one cell
     priv->in.cell.x = (float *) calloc(3, sizeof(float));
     priv->in.cell.y = (float *) calloc(3, sizeof(float));
     priv->in.cell.z = (float *) calloc(3, sizeof(float));
     priv->in.n_cells = 1;
+    cp->max_input_cells = 1;    // make sure max is 1
 
     // allocate spot input space for max_spots
     priv->in.spot.x = (float *) calloc(cp->max_spots, sizeof(float));
@@ -200,18 +251,21 @@ void *ffbidx_prepare(IndexingMethod *indm, UnitCell *cell, struct ffbidx_options
     }
 
     // create indexer state
-    priv->handle = create_indexer(&priv->opts.cpers, NULL, NULL);
+    priv->handle = create_indexer(&priv->opts.cpers, MEMORY_PIN_STATIC, &priv->err_msg, NULL);
     if (priv->handle < 0) {
         ERROR("Error creating indexer\n");
         return NULL;
     }
 
     *indm &= INDEXING_METHOD_MASK | INDEXING_USE_CELL_PARAMETERS;
+    priv->state = STATE_CREATED;
     return priv;
 }
 
 void ffbidx_cleanup(void *ipriv) {
     struct ffbidx_private_data *priv = (struct ffbidx_private_data *) ipriv;
+    check_ffbidx_state(priv, STATE_CREATED);
+    priv->state = STATE_UNDEF;
 
     // drop indexer state
     if (drop_indexer(priv->handle) != 0) {
