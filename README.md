@@ -33,6 +33,7 @@ Documentation
 -------------
 
 * [Basic Tutorial](doc/articles/tutorial.rst)
+* [Which indexing method(s) should I use?](doc/articles/indexer-choice.rst)
 * [How to choose the right point group for merging](doc/articles/pointgroup.rst)
 * [How to increase data processing speed](doc/articles/speed.rst)
 * [Real-time data processing](doc/articles/online.rst)
@@ -86,6 +87,26 @@ Citing CrystFEL
 ---------------
 
 Please see [CONTRIBUTING.md](CONTRIBUTING.md) for citation instructions.
+
+
+Related software
+----------------
+
+[OnDA Monitor](https://www.ondamonitor.com/) for real-time monitoring of data
+quality.  Read [the paper](https://doi.org/10.1107/s1600576716007469).
+
+[Pixel Anomaly Detection Tool](https://github.com/gihankaushyal/PixelAnomalyDetectorTool)
+uses machine learning techniques to find misbehaving detector pixels.
+Read [the paper](https://doi.org/10.1107/s1600576724000116).
+
+[Careless](https://github.com/rs-station/careless) scales and merges data
+using variational inference.  Use its `stream2mtz` script to import data from
+CrystFEL.  Read [the paper](http://dx.doi.org/10.1038/s41467-022-35280-8).
+
+[DatView](https://github.com/nstander/DatView) helps with multivariate analysis
+of large datasets.  Read [the paper](https://doi.org/10.1107/s1600576719012044).
+[More information here](https://sites.google.com/view/zatsepinlab/resources/datview)
+including a tutorial and manual.
 
 
 Funding acknowledgements

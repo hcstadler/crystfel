@@ -24,7 +24,7 @@ build_dev_images:
     - >
       /kaniko/executor
       --context $CI_PROJECT_DIR
-      --dockerfile $CI_PROJECT_DIR/Dockerfile_$IMAGE
+      --dockerfile $CI_PROJECT_DIR/deployment/docker/Dockerfile_$IMAGE
       --destination $CI_REGISTRY_IMAGE/$IMAGE:$IMAGE_TAG_LATEST
       --destination $CI_REGISTRY_IMAGE/$IMAGE:$IMAGE_TAG_SHA
       --build-arg HELM_VERSION=$HELM_VERSION
@@ -91,9 +91,9 @@ build-and-test:
 build-and-test-minimal:
   image: $IMAGE:latest
   script:
-    - dnf update -y && dnf group install -y 'Development Tools' &&
-      dnf install -y gsl-devel flex bison  cmake meson
-    - meson setup build -Dhdf5=disabled --wrap-mode=nofallback && ninja -C build &&  ninja -C build test
+    - dnf update -y && dnf group install -y development-tools &&
+      dnf install -y gsl-devel flex bison cmake meson
+    - meson setup build -Dhdf5=disabled --wrap-mode=nofallback && ninja -C build && ninja -C build test
 
   artifacts:
     when: always
@@ -183,7 +183,7 @@ build_container_image:
     - >
       /kaniko/executor
       --context $CI_PROJECT_DIR
-      --dockerfile $CI_PROJECT_DIR/Dockerfile
+      --dockerfile $CI_PROJECT_DIR/deployment/docker/Dockerfile
       --destination $CI_REGISTRY_IMAGE/$IMAGE:$IMAGE_TAG_LATEST
       --destination $CI_REGISTRY_IMAGE/$IMAGE:$IMAGE_TAG_SHA
       --build-arg HELM_VERSION=$HELM_VERSION
@@ -211,7 +211,7 @@ build_container_image_tag:
     - >
       /kaniko/executor
       --context $CI_PROJECT_DIR
-      --dockerfile $CI_PROJECT_DIR/Dockerfile
+      --dockerfile $CI_PROJECT_DIR/deployment/docker/Dockerfile
       --destination $CI_REGISTRY_IMAGE/$IMAGE:$IMAGE_TAG_VER
       --build-arg HELM_VERSION=$HELM_VERSION
       --build-arg RANCHER_CLI_VERSION=$RANCHER_CLI_VERSION

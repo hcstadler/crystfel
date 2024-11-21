@@ -89,22 +89,6 @@ static const char *onoff(int a)
 }
 
 
-static void show_indexing_flags(IndexingFlags flags)
-{
-	STATUS("Indexing parameters:\n");
-	STATUS("                  Check unit cell parameters: %s\n",
-	       onoff(flags & INDEXING_CHECK_CELL));
-	STATUS("                        Check peak alignment: %s\n",
-	       onoff(flags & INDEXING_CHECK_PEAKS));
-	STATUS("                   Refine indexing solutions: %s\n",
-	       onoff(flags & INDEXING_REFINE));
-	STATUS(" Multi-lattice indexing (\"delete and retry\"): %s\n",
-	       onoff(flags & INDEXING_MULTI));
-	STATUS("                              Retry indexing: %s\n",
-	       onoff(flags & INDEXING_RETRY));
-}
-
-
 char *base_indexer_str(IndexingMethod indm)
 {
 	char *str;
@@ -443,17 +427,34 @@ IndexingPrivate *setup_indexing(const char *method_list,
 	}
 	for ( i=0; i<6; i++ ) ipriv->tolerance[i] = tols[i];
 
+	return ipriv;
+}
+
+
+void print_indexing_info(IndexingPrivate *ipriv)
+{
+	int i;
+
 	STATUS("List of indexing methods:\n");
-	for ( i=0; i<n; i++ ) {
-		char *str = indexer_str(methods[i]);
-		char *tmp = friendly_indexer_name(methods[i]);
+	for ( i=0; i<ipriv->n_methods; i++ ) {
+		char *str = indexer_str(ipriv->methods[i]);
+		char *tmp = friendly_indexer_name(ipriv->methods[i]);
 		STATUS("  %2i: %-25s (%s)\n", i, str, tmp);
 		cffree(str);
 		cffree(tmp);
 	}
-	show_indexing_flags(flags);
 
-	return ipriv;
+	STATUS("Indexing parameters:\n");
+	STATUS("                  Check unit cell parameters: %s\n",
+	       onoff(ipriv->flags & INDEXING_CHECK_CELL));
+	STATUS("                        Check peak alignment: %s\n",
+	       onoff(ipriv->flags & INDEXING_CHECK_PEAKS));
+	STATUS("                   Refine indexing solutions: %s\n",
+	       onoff(ipriv->flags & INDEXING_REFINE));
+	STATUS(" Multi-lattice indexing (\"delete and retry\"): %s\n",
+	       onoff(ipriv->flags & INDEXING_MULTI));
+	STATUS("                              Retry indexing: %s\n",
+	       onoff(ipriv->flags & INDEXING_RETRY));
 }
 
 
@@ -581,16 +582,6 @@ static int check_cell(IndexingFlags flags, Crystal *cr, UnitCell *target,
 }
 
 
-#ifdef MEASURE_INDEX_TIME
-static float real_time()
-{
-	struct timespec tp;
-	clock_gettime(CLOCK_MONOTONIC_RAW, &tp);
-	return tp.tv_sec + tp.tv_nsec*1e-9;
-}
-#endif
-
-
 /* Return non-zero for "success" */
 static int try_indexer(struct image *image, IndexingMethod indm,
                        IndexingPrivate *ipriv, void *mpriv,
@@ -599,12 +590,6 @@ static int try_indexer(struct image *image, IndexingMethod indm,
 	int i, r;
 	int n_bad = 0;
 	int n_before = image->n_crystals;
-
-	#ifdef MEASURE_INDEX_TIME
-	float time_start;
-	float time_end;
-	time_start = real_time();
-	#endif
 
 	switch ( indm & INDEXING_METHOD_MASK ) {
 
@@ -688,10 +673,6 @@ static int try_indexer(struct image *image, IndexingMethod indm,
 	}
 
 	set_last_task("indexing:finalisation");
-
-	#ifdef MEASURE_INDEX_TIME
-	time_end = real_time();
-	#endif
 
 	/* Stop a really difficult to debug situation in its tracks */
 	if ( image->n_crystals - n_before != r ) {
@@ -794,16 +775,6 @@ static int try_indexer(struct image *image, IndexingMethod indm,
 
 	n_bad = remove_flagged_crystals(image);
 	assert(r >= n_bad);
-
-	#ifdef MEASURE_INDEX_TIME
-	printf("%s took %f s, %i crystals found of which %i accepted. %s %s\n",
-	       indexer_str(indm & INDEXING_METHOD_MASK),
-	       time_end - time_start,
-	       r, r - n_bad,
-	       image->filename,
-	       image->ev);
-	fflush(stdout);
-	#endif
 
 	return r - n_bad;
 }
