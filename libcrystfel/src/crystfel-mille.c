@@ -387,13 +387,9 @@ void crystfel_mille_write_record(Mille *m)
 	fwrite(&nw, sizeof(int), 1, m->fh);
 
 	fwrite(&nf, sizeof(float), 1, m->fh);
-	for ( i=0; i<m->n; i++ ) {
-		fwrite(&m->float_arr[i], sizeof(float), 1, m->fh);
-	}
+	fwrite(m->float_arr, sizeof(float), m->n, m->fh);
 
 	fwrite(&ni, sizeof(int), 1, m->fh);
-	for ( i=0; i<m->n; i++ ) {
-		fwrite(&m->int_arr[i], sizeof(int), 1, m->fh);
-	}
+	fwrite(m->int_arr, sizeof(int), m->n, m->fh);
 	m->n = 0;
 }
